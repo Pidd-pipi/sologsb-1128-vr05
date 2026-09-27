@@ -9,12 +9,18 @@ function hoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600 * 1000).toISOString();
 }
 
+function hoursFromNow(hours: number): string {
+  return new Date(Date.now() + hours * 3600 * 1000).toISOString();
+}
+
 export interface SeedOccupancy {
   berthNo: string;
   vesselId: string;
   vesselName: string;
   status: BerthStatus;
   berthAt: string;
+  /** 可选：演示用维护安排（相对当前时间的小时数） */
+  maintenance?: { startInHours: number; endInHours: number; note: string };
 }
 
 /** 演示数据中的初始占用 / 维修泊位 */
@@ -28,6 +34,14 @@ export const SEED_OCCUPANCY: Record<string, SeedOccupancy[]> = {
     { berthNo: 'B01', vesselId: 'v-2002', vesselName: '浙普渔13208', status: '占用', berthAt: hoursAgo(2) },
     { berthNo: 'B02', vesselId: 'v-2006', vesselName: '浙普渔13566', status: '占用', berthAt: hoursAgo(26) },
     { berthNo: 'B06', vesselId: '', vesselName: '', status: '维修', berthAt: '' },
+    {
+      berthNo: 'B03',
+      vesselId: '',
+      vesselName: '',
+      status: '空闲',
+      berthAt: '',
+      maintenance: { startInHours: 30, endInHours: 78, note: '泊位吊机检修' },
+    },
   ],
   'p-1003': [
     { berthNo: 'B01', vesselId: 'v-2003', vesselName: '浙岱渔07156', status: '占用', berthAt: hoursAgo(1) },
@@ -57,6 +71,16 @@ export function buildBerthRecords(
       leaveAt: null,
       status: hit ? hit.status : '空闲',
       designDepth: port.berthDepth,
+      maintenance: hit?.maintenance
+        ? {
+            startAt: hoursFromNow(hit.maintenance.startInHours),
+            endAt: hoursFromNow(hit.maintenance.endInHours),
+            note: hit.maintenance.note,
+            createdAt: new Date().toISOString(),
+            cancelledAt: null,
+            cancelReason: null,
+          }
+        : null,
     });
   }
   return records;

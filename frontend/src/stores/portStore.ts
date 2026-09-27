@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { db } from '../db';
-import { toPlain, uid } from '../utils/format';
+import { formatDateTime, toPlain, uid } from '../utils/format';
 import { emptyPortFilter, type FishingPort, type PortFilter, type SupplyCapability } from '../types/port';
-import type { Berth, BerthStatus } from '../types/berth';
+import type { Berth, BerthMaintenance, BerthStatus } from '../types/berth';
 import type { CallDraft, PortCall } from '../types/call';
 import { buildBerthRecords } from '../db/berth';
+import { maintenanceConflict, maintenancePhase } from '../utils/maintenance';
 
 export interface PortInput {
   name: string;
@@ -18,6 +19,13 @@ export interface PortInput {
   shelterLevel: number;
   supply: SupplyCapability;
   manager: string;
+}
+
+/** 维护安排登记入参（开始 / 结束为本地日期时间字符串） */
+export interface MaintenanceInput {
+  startAt: string;
+  endAt: string;
+  note: string;
 }
 
 export const usePortStore = defineStore('port', () => {
@@ -110,6 +118,7 @@ export const usePortStore = defineStore('port', () => {
       leaveAt: null,
       status: '空闲',
       designDepth: Number(designDepth) || port.berthDepth,
+      maintenance: null,
     };
     await db.berths.put(toPlain(berth));
     berths.value = [...berths.value, berth];
@@ -133,6 +142,55 @@ export const usePortStore = defineStore('port', () => {
     berths.value = berths.value.map((b) => (b.id === berthId ? next : b));
   }
 
+  /**
+   * 为泊位登记维护安排：开始前泊位照常使用，进入窗口后网格 / 占用率 / 在港汇总按维修显示。
+   * 已存在未取消且未结束的安排时拒绝重复登记。
+   */
+  async function scheduleMaintenance(berthId: string, input: MaintenanceInput): Promise<Berth> {
+    const hit = berths.value.find((b) => b.id === berthId);
+    if (!hit) throw new Error('泊位不存在');
+    const start = new Date(input.startAt).getTime();
+    const end = new Date(input.endAt).getTime();
+    if (Number.isNaN(start) || Number.isNaN(end)) throw new Error('请填写完整的维护开始与结束时间');
+    if (end <= start) throw new Error('维护结束时间必须晚于开始时间');
+    const phase = maintenancePhase(hit.maintenance);
+    if (phase === '未开始' || phase === '进行中') {
+      throw new Error(`该泊位已有${phase}的维护安排，请先取消或待其结束后再登记`);
+    }
+    const maintenance: BerthMaintenance = {
+      startAt: new Date(input.startAt).toISOString(),
+      endAt: new Date(input.endAt).toISOString(),
+      note: input.note.trim(),
+      createdAt: new Date().toISOString(),
+      cancelledAt: null,
+      cancelReason: null,
+    };
+    const next: Berth = { ...hit, maintenance };
+    await db.berths.put(toPlain(next));
+    berths.value = berths.value.map((b) => (b.id === berthId ? next : b));
+    return next;
+  }
+
+  /**
+   * 取消维护安排：仅未开始的安排可取消，且必须留下取消原因；维护开始后不可取消。
+   */
+  async function cancelMaintenance(berthId: string, reason: string): Promise<Berth> {
+    const hit = berths.value.find((b) => b.id === berthId);
+    if (!hit || !hit.maintenance) throw new Error('该泊位暂无维护安排');
+    const phase = maintenancePhase(hit.maintenance);
+    if (phase === '已取消') throw new Error('该维护安排已取消');
+    if (phase !== '未开始') throw new Error('维护已开始，不能取消');
+    const text = reason.trim();
+    if (!text) throw new Error('取消维护安排必须填写原因');
+    const next: Berth = {
+      ...hit,
+      maintenance: { ...hit.maintenance, cancelledAt: new Date().toISOString(), cancelReason: text },
+    };
+    await db.berths.put(toPlain(next));
+    berths.value = berths.value.map((b) => (b.id === berthId ? next : b));
+    return next;
+  }
+
   async function updatePort(portId: string, patch: Partial<FishingPort>): Promise<void> {
     const hit = portById(portId);
     if (!hit) return;
@@ -143,8 +201,18 @@ export const usePortStore = defineStore('port', () => {
 
   /**
    * 登记一条进出港记录，并同步泊位占用状态（进港 → 占用，出港 → 释放）。
+   * 所选时间撞上泊位维护安排时拒绝登记并说明冲突时段。
    */
   async function registerCall(draft: CallDraft, vesselName: string, portId: string): Promise<PortCall> {
+    const berth = berths.value.find((b) => b.portId === portId && b.berthNo === draft.berthNo);
+    if (berth) {
+      const conflict = maintenanceConflict(berth, draft.time || new Date().toISOString());
+      if (conflict) {
+        throw new Error(
+          `泊位 ${berth.berthNo} 已安排维护（${formatDateTime(conflict.startAt)} 至 ${formatDateTime(conflict.endAt)}），与所选时间冲突`,
+        );
+      }
+    }
     const call: PortCall = {
       id: uid('c'),
       vesselId: draft.vesselId,
@@ -161,7 +229,6 @@ export const usePortStore = defineStore('port', () => {
     await db.calls.put(toPlain(call));
     calls.value = [...calls.value, call];
 
-    const berth = berths.value.find((b) => b.portId === portId && b.berthNo === draft.berthNo);
     if (berth) {
       const next: Berth =
         draft.type === '进港'
@@ -203,6 +270,8 @@ export const usePortStore = defineStore('port', () => {
     createPort,
     addBerth,
     setBerthStatus,
+    scheduleMaintenance,
+    cancelMaintenance,
     updatePort,
     registerCall,
   };

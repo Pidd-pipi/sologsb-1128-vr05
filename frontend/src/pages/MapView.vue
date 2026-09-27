@@ -5,10 +5,12 @@ import { usePortStore } from '../stores/portStore';
 import { useUiStore } from '../stores/uiStore';
 import { useAmapLoader } from '../hooks/useAmapLoader';
 import { useBerthStatus } from '../hooks/useBerthStatus';
+import { useNow } from '../hooks/useNow';
 import MapPanel from '../components/common/MapPanel.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
 import { formatDateTime, percentText } from '../utils/format';
+import { effectiveBerthStatus } from '../utils/maintenance';
 import { haversineKm } from '../utils/geo';
 
 const router = useRouter();
@@ -18,6 +20,7 @@ const uiStore = useUiStore();
 const loader = useAmapLoader();
 const berthsRef = computed(() => portStore.berths);
 const { summaryOf } = useBerthStatus(berthsRef);
+const now = useNow();
 
 const dialogVisible = ref(false);
 const activePortId = ref('');
@@ -167,7 +170,9 @@ function openPortDetail(): void {
         <p class="dialog-sub">全部泊位</p>
         <el-table :data="activeBerths" size="small" border>
           <el-table-column prop="berthNo" label="泊位号" width="90" />
-          <el-table-column prop="status" label="状态" width="90" />
+          <el-table-column label="状态" width="90">
+            <template #default="scope">{{ effectiveBerthStatus(scope.row, now) }}</template>
+          </el-table-column>
           <el-table-column prop="vesselName" label="占用船舶" min-width="130" />
         </el-table>
       </template>
