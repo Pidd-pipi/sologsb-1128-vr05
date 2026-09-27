@@ -9,6 +9,7 @@ import { useBerthStatus } from '../hooks/useBerthStatus';
 import BerthGrid from '../components/common/BerthGrid.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import type { Berth } from '../types/berth';
+import { effectiveBerthStatus, maintenanceConflictText } from '../types/berth';
 import { CALL_TYPES, VISA_STATUSES, emptyCallDraft, type CallDraft, type CallType } from '../types/call';
 import { formatDateTime, formatNumber, isToday, nowLocalInputValue, toPlain } from '../utils/format';
 
@@ -41,11 +42,11 @@ const vesselOptions = computed(() => vesselStore.vessels);
 
 const selectedVessel = computed(() => vesselStore.vesselById(form.value.vesselId));
 
-/** 进港只能选空闲泊位；出港只能选已占用泊位 */
+/** 进港只能选空闲泊位；出港只能选已占用泊位（维护时段内的泊位按维修处理，不可选） */
 const berthOptions = computed(() => {
   const wanted = form.value.type === '进港' ? '空闲' : '占用';
   return portStore.berths
-    .filter((b) => b.status === wanted)
+    .filter((b) => effectiveBerthStatus(b) === wanted)
     .map((b) => ({
       value: `${b.portId}|${b.berthNo}`,
       label: `${portStore.portById(b.portId)?.name ?? b.portId} · ${b.berthNo}`,
@@ -67,6 +68,21 @@ const berthKey = computed({
 const focusBerths = computed<Berth[]>(() =>
   focusPortId.value ? portStore.berthsOf(focusPortId.value) : [],
 );
+
+/** 当前选中的泊位记录 */
+const selectedBerth = computed<Berth | null>(
+  () =>
+    portStore.berths.find((b) => b.portId === form.value.portId && b.berthNo === form.value.berthNo) ?? null,
+);
+
+/**
+ * 所选时间撞上泊位维护安排时的冲突说明（空串表示无冲突）。
+ * 泊位或时间任一变化都会重新检查。
+ */
+const maintenanceConflict = computed(() => {
+  if (!selectedBerth.value || !form.value.time) return '';
+  return maintenanceConflictText(selectedBerth.value, form.value.time) ?? '';
+});
 
 const berthRef = computed(() => portStore.berths);
 const { summary } = useBerthStatus(berthRef, computed(() => focusPortId.value));
@@ -134,6 +150,10 @@ async function submit(): Promise<void> {
   if (!valid) return;
   if (!selectedVessel.value) {
     ElMessage.warning('请选择有效的渔船');
+    return;
+  }
+  if (maintenanceConflict.value) {
+    ElMessage.error(`无法保存：${maintenanceConflict.value}，请调整时间或更换泊位`);
     return;
   }
   submitting.value = true;
@@ -238,6 +258,16 @@ function openVessel(vesselId: string): void {
                 <el-option v-for="opt in berthOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
               </el-select>
             </el-form-item>
+
+            <el-alert
+              v-if="maintenanceConflict"
+              type="error"
+              show-icon
+              :closable="false"
+              class="conflict-alert"
+              data-testid="maintenance-conflict"
+              :title="`所选时间与维护安排冲突：${maintenanceConflict}`"
+            />
 
             <el-row :gutter="12">
               <el-col :span="8">
@@ -353,6 +383,10 @@ function openVessel(vesselId: string): void {
 }
 .draft-alert {
   border-radius: 10px;
+}
+.conflict-alert {
+  margin: 0 0 12px 110px;
+  border-radius: 8px;
 }
 .stat-row {
   display: flex;

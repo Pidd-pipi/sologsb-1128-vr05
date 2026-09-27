@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { Berth, BerthStatus } from '../../types/berth';
-import { formatNumber } from '../../utils/format';
+import { effectiveBerthStatus, type Berth, type BerthStatus } from '../../types/berth';
+import { formatDateTime, formatNumber } from '../../utils/format';
+import { useNow } from '../../hooks/useNow';
 
 const props = withDefaults(
   defineProps<{
@@ -32,6 +33,13 @@ const FILLS: Record<BerthStatus, string> = {
   维修: '#f4f4f5',
 };
 
+const now = useNow();
+
+/** 生效状态：进入维护时段的泊位按维修显示 */
+function statusOf(berth: Berth): BerthStatus {
+  return effectiveBerthStatus(berth, now.value);
+}
+
 const rows = computed(() => Math.max(1, Math.ceil(props.berths.length / props.perRow)));
 const width = computed(() => PAD * 2 + props.perRow * CELL_W + (props.perRow - 1) * GAP);
 const height = computed(() => PAD * 2 + rows.value * CELL_H + (rows.value - 1) * GAP);
@@ -40,7 +48,7 @@ const legend = computed(() =>
   (['空闲', '占用', '维修'] as BerthStatus[]).map((status) => ({
     status,
     color: COLORS[status],
-    count: props.berths.filter((b) => b.status === status).length,
+    count: props.berths.filter((b) => statusOf(b) === status).length,
   })),
 );
 
@@ -48,6 +56,24 @@ function cellAt(index: number): { x: number; y: number } {
   const row = Math.floor(index / props.perRow);
   const col = index % props.perRow;
   return { x: PAD + col * (CELL_W + GAP), y: PAD + row * (CELL_H + GAP) };
+}
+
+function cellTitle(berth: Berth): string {
+  const status = statusOf(berth);
+  const base = `${berth.berthNo} · ${status}${status === '占用' && berth.vesselName ? ' · ' + berth.vesselName : ''}`;
+  const plan = berth.maintenance;
+  if (plan && !plan.cancelledAt) {
+    return `${base} · 维护 ${formatDateTime(plan.startAt)} ~ ${formatDateTime(plan.endAt)}`;
+  }
+  return base;
+}
+
+function cellFootnote(berth: Berth): string {
+  const status = statusOf(berth);
+  if (status === '占用') return berth.vesselName || '未知船舶';
+  const plan = berth.maintenance;
+  if (plan && !plan.cancelledAt) return status === '维修' ? '维护中' : '已排维护';
+  return '—';
 }
 
 function onSelect(berth: Berth): void {
@@ -70,31 +96,31 @@ function onSelect(berth: Berth): void {
           :width="CELL_W"
           :height="CELL_H"
           rx="10"
-          :fill="FILLS[berth.status]"
-          :stroke="highlightBerthNo === berth.berthNo ? '#409eff' : COLORS[berth.status]"
+          :fill="FILLS[statusOf(berth)]"
+          :stroke="highlightBerthNo === berth.berthNo ? '#409eff' : COLORS[statusOf(berth)]"
           :stroke-width="highlightBerthNo === berth.berthNo ? 3 : 1.5"
           class="berth-grid__cell"
           :class="{ 'berth-grid__cell--selectable': selectable }"
           :data-testid="`berth-cell-${berth.berthNo}`"
           :data-berth-no="berth.berthNo"
-          :data-status="berth.status"
+          :data-status="statusOf(berth)"
           @click="onSelect(berth)"
         >
-          <title>{{ `${berth.berthNo} · ${berth.status}${berth.vesselName ? ' · ' + berth.vesselName : ''}` }}</title>
+          <title>{{ cellTitle(berth) }}</title>
         </rect>
         <text
           :x="cellAt(index).x + 12"
           :y="cellAt(index).y + 26"
           class="berth-grid__no"
-          :data-status="berth.status"
+          :data-status="statusOf(berth)"
         >
           {{ berth.berthNo }}
         </text>
         <text :x="cellAt(index).x + 12" :y="cellAt(index).y + 46" class="berth-grid__meta">
-          {{ berth.status }} · 水深 {{ formatNumber(berth.designDepth) }}m
+          {{ statusOf(berth) }} · 水深 {{ formatNumber(berth.designDepth) }}m
         </text>
         <text :x="cellAt(index).x + 12" :y="cellAt(index).y + 64" class="berth-grid__vessel">
-          {{ berth.status === '占用' ? berth.vesselName || '未知船舶' : '—' }}
+          {{ cellFootnote(berth) }}
         </text>
       </g>
     </svg>

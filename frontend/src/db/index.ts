@@ -7,7 +7,8 @@ import { buildBerthRecords } from './berth';
 
 /**
  * gbfishport-db：库名固定为 gbfishport-db
- * v1 建 ports / vessels；v2 新增 calls 表与 vesselId 索引；v3 新增 berths 表并按泊位数生成初始记录。
+ * v1 建 ports / vessels；v2 新增 calls 表与 vesselId 索引；v3 新增 berths 表并按泊位数生成初始记录；
+ * v4 泊位补充维护安排字段（maintenance），历史记录回填 null。
  */
 export class FishPortDatabase extends Dexie {
   ports!: Table<FishingPort, string>;
@@ -53,6 +54,16 @@ export class FishPortDatabase extends Dexie {
           }
         }
       });
+
+    this.version(4).upgrade(async (tx) => {
+      // v4 迁移：泊位补充维护安排字段，历史记录回填 null（无索引变更，无需 stores）
+      await tx
+        .table<Berth, string>('berths')
+        .toCollection()
+        .modify((berth) => {
+          if (berth.maintenance === undefined) berth.maintenance = null;
+        });
+    });
   }
 }
 

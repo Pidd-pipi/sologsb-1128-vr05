@@ -6,6 +6,7 @@ import { usePortStore } from '../stores/portStore';
 import VesselSpecTable from '../components/common/VesselSpecTable.vue';
 import EmptyState from '../components/common/EmptyState.vue';
 import type { PortCall } from '../types/call';
+import { effectiveBerthStatus } from '../types/berth';
 import { daysUntilExpiry, expiryText, powerTier, tonnageTier } from '../utils/tonnage';
 import { formatDateTime, formatNumber } from '../utils/format';
 
@@ -23,7 +24,7 @@ const calls = computed<PortCall[]>(() => (vessel.value ? portStore.callsOfVessel
 const occupancy = computed(() => {
   if (!vessel.value) return [] as Array<{ portName: string; berthNo: string; berthAt: string | null }>;
   return portStore.berths
-    .filter((b) => b.vesselId === vessel.value!.id && b.status === '占用')
+    .filter((b) => b.vesselId === vessel.value!.id && effectiveBerthStatus(b) === '占用')
     .map((b) => ({
       portName: portStore.portById(b.portId)?.name ?? b.portId,
       berthNo: b.berthNo,

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePortStore } from '../stores/portStore';
 import { useVesselStore } from '../stores/vesselStore';
 import { useBerthStatus } from '../hooks/useBerthStatus';
+import { useNow } from '../hooks/useNow';
 import PortCard from '../components/common/PortCard.vue';
 import BerthGrid from '../components/common/BerthGrid.vue';
 import MapPanel from '../components/common/MapPanel.vue';
 import EmptyState from '../components/common/EmptyState.vue';
-import type { Berth } from '../types/berth';
+import type { Berth, MaintenanceState } from '../types/berth';
+import { effectiveBerthStatus, maintenanceState } from '../types/berth';
 import { formatDateTime, formatNumber, percentText } from '../utils/format';
 import { supplyText } from '../types/port';
 
@@ -32,6 +34,36 @@ const activeBerth = computed<Berth | null>(
 const activeVessel = computed(() =>
   activeBerth.value?.vesselId ? vesselStore.vesselById(activeBerth.value.vesselId) : undefined,
 );
+
+const now = useNow();
+
+/** 泊位详情弹窗中的生效状态（维护时段内按维修显示） */
+const activeBerthStatus = computed(() =>
+  activeBerth.value ? effectiveBerthStatus(activeBerth.value, now.value) : null,
+);
+
+const maintenanceForm = reactive({ startAt: '', endAt: '' });
+const activePlan = computed(() => activeBerth.value?.maintenance ?? null);
+const planState = computed<MaintenanceState | null>(() =>
+  activePlan.value ? maintenanceState(activePlan.value, now.value) : null,
+);
+/** 无安排、已取消或已结束时可以重新登记维护安排 */
+const canSchedule = computed(() => !planState.value || planState.value === '已取消' || planState.value === '已结束');
+/** 仅未开始的安排允许取消 */
+const canCancelPlan = computed(() => planState.value === '未开始');
+
+const planTagType = computed(() => {
+  switch (planState.value) {
+    case '维护中':
+      return 'danger';
+    case '未开始':
+      return 'warning';
+    case '已结束':
+      return 'success';
+    default:
+      return 'info';
+  }
+});
 
 const addBerthVisible = ref(false);
 const addBerthForm = reactive({ berthNo: '', designDepth: 4.5 });
@@ -56,6 +88,8 @@ watch(portId, bootstrap);
 
 function openBerth(berth: Berth): void {
   activeBerthId.value = berth.id;
+  maintenanceForm.startAt = '';
+  maintenanceForm.endAt = '';
   berthDialogVisible.value = true;
 }
 
@@ -71,6 +105,40 @@ async function releaseBerth(): Promise<void> {
   if (!berth) return;
   await portStore.setBerthStatus(berth.id, '空闲');
   ElMessage.success(`${berth.berthNo} 已释放为空闲`);
+}
+
+async function submitMaintenance(): Promise<void> {
+  const berth = activeBerth.value;
+  if (!berth) return;
+  const error = await portStore.scheduleMaintenance(berth.id, maintenanceForm.startAt, maintenanceForm.endAt);
+  if (error) {
+    ElMessage.warning(error);
+    return;
+  }
+  maintenanceForm.startAt = '';
+  maintenanceForm.endAt = '';
+  ElMessage.success(`${berth.berthNo} 维护安排已保存`);
+}
+
+async function cancelPlan(): Promise<void> {
+  const berth = activeBerth.value;
+  if (!berth) return;
+  try {
+    const { value } = await ElMessageBox.prompt('请填写取消原因（将保留在维护记录中）', `取消 ${berth.berthNo} 维护安排`, {
+      confirmButtonText: '确认取消',
+      cancelButtonText: '返回',
+      inputPlaceholder: '如：施工计划调整',
+      inputValidator: (v: string) => (v && v.trim() ? true : '取消原因不能为空'),
+    });
+    const error = await portStore.cancelMaintenance(berth.id, value);
+    if (error) {
+      ElMessage.warning(error);
+      return;
+    }
+    ElMessage.success(`${berth.berthNo} 维护安排已取消`);
+  } catch {
+    /* 用户放弃取消 */
+  }
 }
 
 async function submitBerth(): Promise<void> {
@@ -225,9 +293,10 @@ function onMapSelect(selectedPortId: string): void {
         <el-descriptions :column="1" size="small" border>
           <el-descriptions-item label="泊位号">{{ activeBerth.berthNo }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag size="small" :type="activeBerth.status === '占用' ? 'warning' : activeBerth.status === '维修' ? 'info' : 'success'">
-              {{ activeBerth.status }}
+            <el-tag size="small" :type="activeBerthStatus === '占用' ? 'warning' : activeBerthStatus === '维修' ? 'info' : 'success'">
+              {{ activeBerthStatus }}
             </el-tag>
+            <span v-if="activeBerthStatus === '维修' && activeBerth.status !== '维修'" class="maintenance-hint">（维护时段内）</span>
           </el-descriptions-item>
           <el-descriptions-item label="设计水深">{{ formatNumber(activeBerth.designDepth) }} m</el-descriptions-item>
           <el-descriptions-item label="占用渔船">
@@ -247,6 +316,63 @@ function onMapSelect(selectedPortId: string): void {
             {{ activeVessel ? `${formatNumber(activeVessel.grossTonnage)} t` : '—' }}
           </el-descriptions-item>
         </el-descriptions>
+
+        <el-divider content-position="left">维护安排</el-divider>
+        <template v-if="activePlan">
+          <el-descriptions :column="1" size="small" border>
+            <el-descriptions-item label="开始时间">{{ formatDateTime(activePlan.startAt) }}</el-descriptions-item>
+            <el-descriptions-item label="结束时间">{{ formatDateTime(activePlan.endAt) }}</el-descriptions-item>
+            <el-descriptions-item label="安排状态">
+              <el-tag size="small" :type="planTagType">{{ planState }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="activePlan.cancelledAt" label="取消信息">
+              {{ activePlan.cancelReason }}（{{ formatDateTime(activePlan.cancelledAt) }}）
+            </el-descriptions-item>
+          </el-descriptions>
+          <div class="maintenance-actions">
+            <el-button
+              v-if="canCancelPlan"
+              type="danger"
+              plain
+              size="small"
+              data-testid="cancel-maintenance"
+              @click="cancelPlan"
+            >
+              取消维护安排
+            </el-button>
+            <span v-else-if="planState === '维护中'" class="maintenance-hint">维护已开始，不能取消</span>
+            <span v-else-if="planState === '未开始'" class="maintenance-hint">维护尚未开始，泊位照常使用</span>
+          </div>
+        </template>
+        <template v-if="canSchedule">
+          <el-form label-width="90px" class="maintenance-form">
+            <el-form-item label="开始时间">
+              <el-date-picker
+                v-model="maintenanceForm.startAt"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm"
+                placeholder="维护开始时间"
+                style="width: 100%"
+                data-testid="maintenance-start"
+              />
+            </el-form-item>
+            <el-form-item label="结束时间">
+              <el-date-picker
+                v-model="maintenanceForm.endAt"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm"
+                placeholder="维护结束时间"
+                style="width: 100%"
+                data-testid="maintenance-end"
+              />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" size="small" data-testid="save-maintenance" @click="submitMaintenance">
+                保存维护安排
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </template>
       </template>
       <template #footer>
         <el-button @click="berthDialogVisible = false">关闭</el-button>
@@ -311,5 +437,18 @@ function onMapSelect(selectedPortId: string): void {
   margin: 10px 0 0;
   font-size: 12px;
   color: #6b7c8c;
+}
+.maintenance-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.maintenance-hint {
+  font-size: 12px;
+  color: #8592a0;
+}
+.maintenance-form {
+  margin-top: 12px;
 }
 </style>

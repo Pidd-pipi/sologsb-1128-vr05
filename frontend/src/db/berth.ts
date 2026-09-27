@@ -1,5 +1,5 @@
 import type { FishingPort } from '../types/port';
-import type { Berth, BerthStatus } from '../types/berth';
+import type { Berth, BerthStatus, MaintenancePlan } from '../types/berth';
 
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -9,12 +9,17 @@ function hoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600 * 1000).toISOString();
 }
 
+function hoursFromNow(hours: number): string {
+  return new Date(Date.now() + hours * 3600 * 1000).toISOString();
+}
+
 export interface SeedOccupancy {
   berthNo: string;
   vesselId: string;
   vesselName: string;
   status: BerthStatus;
   berthAt: string;
+  maintenance?: MaintenancePlan;
 }
 
 /** 演示数据中的初始占用 / 维修泊位 */
@@ -23,11 +28,41 @@ export const SEED_OCCUPANCY: Record<string, SeedOccupancy[]> = {
     { berthNo: 'B01', vesselId: 'v-2001', vesselName: '浙象渔05123', status: '占用', berthAt: hoursAgo(5) },
     { berthNo: 'B02', vesselId: 'v-2005', vesselName: '浙象渔05288', status: '占用', berthAt: hoursAgo(3) },
     { berthNo: 'B04', vesselId: '', vesselName: '', status: '维修', berthAt: '' },
+    {
+      berthNo: 'B03',
+      vesselId: '',
+      vesselName: '',
+      status: '空闲',
+      berthAt: '',
+      // 进行中的维护安排：进入时段后网格与汇总按维修显示
+      maintenance: {
+        startAt: hoursAgo(6),
+        endAt: hoursFromNow(42),
+        createdAt: hoursAgo(10),
+        cancelledAt: null,
+        cancelReason: null,
+      },
+    },
   ],
   'p-1002': [
     { berthNo: 'B01', vesselId: 'v-2002', vesselName: '浙普渔13208', status: '占用', berthAt: hoursAgo(2) },
     { berthNo: 'B02', vesselId: 'v-2006', vesselName: '浙普渔13566', status: '占用', berthAt: hoursAgo(26) },
     { berthNo: 'B06', vesselId: '', vesselName: '', status: '维修', berthAt: '' },
+    {
+      berthNo: 'B04',
+      vesselId: '',
+      vesselName: '',
+      status: '空闲',
+      berthAt: '',
+      // 尚未开始的维护安排：开始前泊位照常使用
+      maintenance: {
+        startAt: hoursFromNow(24),
+        endAt: hoursFromNow(72),
+        createdAt: hoursAgo(2),
+        cancelledAt: null,
+        cancelReason: null,
+      },
+    },
   ],
   'p-1003': [
     { berthNo: 'B01', vesselId: 'v-2003', vesselName: '浙岱渔07156', status: '占用', berthAt: hoursAgo(1) },
@@ -57,6 +92,7 @@ export function buildBerthRecords(
       leaveAt: null,
       status: hit ? hit.status : '空闲',
       designDepth: port.berthDepth,
+      maintenance: hit?.maintenance ?? null,
     });
   }
   return records;
